@@ -1,8 +1,7 @@
 import subprocess
 import os
 import shutil
-import json
-from pedalboard import Pedalboard, Phaser
+from pedalboard import Pedalboard, Phaser, Delay
 import numpy as np
 from PIL import Image
 import argparse
@@ -10,13 +9,18 @@ from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor
 import gc
 
+FILE_EXT = '.tiff'
+
 def effect(audio_data, fs, frame_no, frame_count):
     coef = float(frame_no) / float(frame_count)
-    board = Pedalboard([Phaser(
-        rate_hz= coef * 1,
-        mix=1
-    )])
-    return board(audio_data, fs)
+    #audio_data = audio_data[::-1]
+    board = Pedalboard([
+        Delay(delay_seconds=0.5, feedback=1, mix=1),
+        Phaser(rate_hz= 0.1, mix=1)
+    ])
+    audio_data = board(audio_data, fs)
+    audio_data = audio_data[::-1]
+    return audio_data
 
 def extract_frames(file_path, output_dir, fps):
     os.makedirs(output_dir, exist_ok=True)
@@ -24,10 +28,10 @@ def extract_frames(file_path, output_dir, fps):
         'ffmpeg.exe',
         '-i', file_path,
         '-vf', f"fps={fps}",
-        os.path.join(output_dir, 'frame_%04d.tiff')
+        os.path.join(output_dir, 'frame_%06d' + FILE_EXT)
     ]
     subprocess.run(ffmpeg_command, check=True)
-    print(f"Extracted {len(os.listdir(output_dir))} frames at {fps} fps\n")
+    print(f"Extracted {len(os.listdir(output_dir))} frames at {fps} fps")
 
 def reconstruct_video(image_directory, output_path, fps):
     if not os.path.exists(image_directory):
@@ -35,8 +39,9 @@ def reconstruct_video(image_directory, output_path, fps):
 
     command = [
         'ffmpeg.exe',
+        '-y', # automatically overwrite file
         '-framerate', str(fps),
-        '-i', os.path.join(image_directory, 'frame_%04d.png'), 
+        '-i', os.path.join(image_directory, 'frame_%06d.png'), 
         '-c:v', 'libx264',
         '-pix_fmt', 'yuv420p',
         output_path
@@ -52,7 +57,7 @@ def reconstruct_video(image_directory, output_path, fps):
 def process_frame(image_path, output_dir, frame_count):
     base_name, _ = os.path.splitext(os.path.basename(image_path))
     output_path = os.path.join(output_dir, f"{base_name}.png")
-    if (os.path.isfile(output_path)): return
+    #if (os.path.isfile(output_path)): return
 
     image = Image.open(image_path)
     image_data = np.array(image)
@@ -67,7 +72,7 @@ def process_frame(image_path, output_dir, frame_count):
     # Process the audio using pedalboard
     fs = 44100  # Sample rate (44.1 kHz)
     filename = os.path.basename(image_path)
-    frame_no = int(filename.replace("frame_", "").replace(".tiff", ""))
+    frame_no = int(filename.replace("frame_", "").replace(FILE_EXT, ""))
     processed_audio = effect(audio_data, fs, frame_no, frame_count)
 
     # Step 4: Convert processed audio back to an image
@@ -92,13 +97,16 @@ def chunk_list(lst, chunk_size):
 def main(filename):
     if not shutil.which("ffmpeg.exe"):
         raise EnvironmentError("ffmpeg is not installed or not found in system PATH.")
+    
+    fps = 24
+    max_workers = os.cpu_count() # alternatively, os.cpu_count()
+    batch_size = 10  # Adjust this based on your memory constraints
+    max_frames = 500
 
     input_path = os.path.abspath(filename)
     dry_output_path = os.path.join(os.getcwd(), "dry_output")
     wet_output_path = os.path.join(os.getcwd(), "wet_output")
     output_file_path = os.path.join(os.getcwd(), "output_" + filename)
-    fps = 24
-    max_workers = 4
 
     if not os.path.isdir(dry_output_path):
         extract_frames(input_path, dry_output_path, fps)
@@ -107,12 +115,15 @@ def main(filename):
 
     # Prepare arguments for processing
     frame_paths = [(os.path.join(dry_output_path, filename), wet_output_path, len((os.listdir(dry_output_path))))
-                   for filename in os.listdir(dry_output_path)]
+                   for filename in sorted(os.listdir(dry_output_path))][:max_frames]
 
-    # Use concurrent.futures to process frames in parallel
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        list(tqdm(executor.map(process_frame_wrapper, frame_paths),
-                  desc="Applying effects to frames", total=len(frame_paths)))
+    # Process frames in batches
+    with tqdm(total=len(frame_paths), desc="Applying effects to frames") as pbar:
+        for batch_frame_paths in chunk_list(frame_paths, batch_size):
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                for _ in executor.map(process_frame_wrapper, batch_frame_paths):
+                    pbar.update()
+            gc.collect() # probably unnecessary
 
     reconstruct_video(wet_output_path, output_file_path, fps)
 
