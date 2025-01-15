@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import subprocess
 import os
 import shutil
@@ -15,8 +17,8 @@ def effect(audio_data, fs, frame_no, frame_count):
     coef = float(frame_no) / float(frame_count)
     #audio_data = audio_data[::-1]
     board = Pedalboard([
-        Delay(delay_seconds=0.5, feedback=1, mix=1),
-        Phaser(rate_hz= 0.1, mix=1)
+        Delay(delay_seconds=0.5, feedback=0.1, mix=1),
+        Phaser(rate_hz= 0, mix=1)
     ])
     audio_data = board(audio_data, fs)
     audio_data = audio_data[::-1]
@@ -25,7 +27,7 @@ def effect(audio_data, fs, frame_no, frame_count):
 def extract_frames(file_path, output_dir, fps):
     os.makedirs(output_dir, exist_ok=True)
     ffmpeg_command = [
-        'ffmpeg.exe',
+        'ffmpeg',
         '-i', file_path,
         '-vf', f"fps={fps}",
         os.path.join(output_dir, 'frame_%06d' + FILE_EXT)
@@ -38,7 +40,7 @@ def reconstruct_video(image_directory, output_path, fps):
         raise ValueError("Image directory does not exist.")
 
     command = [
-        'ffmpeg.exe',
+        'ffmpeg',
         '-y', # automatically overwrite file
         '-framerate', str(fps),
         '-i', os.path.join(image_directory, 'frame_%06d.png'), 
@@ -95,7 +97,7 @@ def chunk_list(lst, chunk_size):
         yield lst[i:i + chunk_size]
 
 def main(filename):
-    if not shutil.which("ffmpeg.exe"):
+    if not shutil.which("ffmpeg"):
         raise EnvironmentError("ffmpeg is not installed or not found in system PATH.")
     
     fps = 24
