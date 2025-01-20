@@ -3,13 +3,12 @@
 import subprocess
 import os
 import shutil
-from pedalboard import Pedalboard, Phaser, Delay
+from pedalboard import Pedalboard, Phaser, Delay, Chorus, Limiter, Gain, Compressor
 import numpy as np
 from PIL import Image
 import argparse
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor
-import gc
 
 FILE_EXT = '.tiff'
 
@@ -17,8 +16,11 @@ def effect(audio_data, fs, frame_no, frame_count):
     coef = float(frame_no) / float(frame_count)
     #audio_data = audio_data[::-1]
     board = Pedalboard([
-        Delay(delay_seconds=0.5, feedback=0.1, mix=1),
-        Phaser(rate_hz= 0, mix=1)
+        Delay(delay_seconds=0.005, feedback=0.8, mix=1),
+        #Chorus()
+        #Gain(gain_db = 3),
+        Phaser(rate_hz=0.005, feedback=0.5, mix=1),
+        Limiter(threshold_db=-6),
     ])
     audio_data = board(audio_data, fs)
     audio_data = audio_data[::-1]
@@ -56,10 +58,45 @@ def reconstruct_video(image_directory, output_path, fps):
     except subprocess.CalledProcessError as e:
         print(f"Error creating video: {e}")
 
+def process_frame_stereo(image_path, output_dir, frame_count):
+    base_name, _ = os.path.splitext(os.path.basename(image_path))
+    output_path = os.path.join(output_dir, f"{base_name}.png")
+
+    image = Image.open(image_path)
+    image_data = np.array(image)
+
+    # Flatten image data to 1D
+    audio_data = image_data.flatten().astype(np.float32)
+
+    # Normalize audio data between -1.0 and 1.0
+    audio_data = (audio_data - np.min(audio_data)) / (np.max(audio_data) - np.min(audio_data))
+    audio_data = 2.0 * audio_data - 1.0
+
+    # Convert to stereo (2-channel)
+    stereo_audio_data = np.vstack((audio_data, audio_data)).T
+
+    # Process the audio using the pedalboard equivalent (dummy processing here)
+    fs = 44100  # Sample rate (44.1 kHz)
+    filename = os.path.basename(image_path)
+    frame_no = int(filename.replace("frame_", "").replace(FILE_EXT, ""))  # Assuming FILE_EXT is '.png'
+    processed_audio = effect(stereo_audio_data.flatten(), fs, frame_no, frame_count)
+
+    # Convert the processed audio back to mono by averaging
+    processed_audio_mono = processed_audio.reshape(-1, 2).mean(axis=1)
+
+    # De-normalize audio data to original image range (0-255)
+    processed_audio_mono = ((processed_audio_mono + 1.0) * 0.5 * 255).astype(np.uint8)
+    processed_image_data = processed_audio_mono.reshape(image_data.shape)
+    
+    # Save the processed data as an image
+    processed_image = Image.fromarray(processed_image_data)
+    processed_image.save(output_path)
+    image.close()
+
 def process_frame(image_path, output_dir, frame_count):
     base_name, _ = os.path.splitext(os.path.basename(image_path))
     output_path = os.path.join(output_dir, f"{base_name}.png")
-    #if (os.path.isfile(output_path)): return
+    # if (os.path.isfile(output_path)): return
 
     image = Image.open(image_path)
     image_data = np.array(image)
@@ -89,7 +126,7 @@ def process_frame(image_path, output_dir, frame_count):
 
 def process_frame_wrapper(args):
     """Helper wrapper since ProcessPoolExecutor needs a single argument."""
-    return process_frame(*args)
+    return process_frame_stereo(*args)
 
 def chunk_list(lst, chunk_size):
     """Yield successive n-sized chunks from lst."""
@@ -125,7 +162,6 @@ def main(filename):
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 for _ in executor.map(process_frame_wrapper, batch_frame_paths):
                     pbar.update()
-            gc.collect() # probably unnecessary
 
     reconstruct_video(wet_output_path, output_file_path, fps)
 
