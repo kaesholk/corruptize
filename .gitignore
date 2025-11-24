@@ -3,3 +3,4 @@
 *.mp4
 dry_output
 wet_output
+.venv
